@@ -5,6 +5,7 @@ import numpy as np
 from src.data import generate_synthetic_traffic
 from src.baselines import NaiveLast, EWMA, MovingAverage
 from src.features import LagFeatureBuilder, TrafficFeatureBuilder
+from src.offline_model import OfflineRidgeForecaster, make_supervised
 from src.ml_model import OnlineSGDRegressor
 from src.eval import mae, rmse, walk_forward_stream
 
@@ -63,6 +64,31 @@ def run_online_ml(
 
     print(f"[ml=online_sgd lag={k}] n={len(y_true)} MAE={mae(y_true,y_pred):.3f} RMSE={rmse(y_true,y_pred):.3f}")
 
+
+def run_offline_ml(
+    series: np.ndarray,
+    k: int = 10,
+    alpha: float = 1.0,
+    train_ratio: float = 0.7,
+):
+    X, y = make_supervised(series, k)
+    n = len(X)
+    n_train = int(n * train_ratio)
+    n_train = max(1, min(n - 1, n_train))  # guardrails
+
+    X_train, y_train = X[:n_train], y[:n_train]
+    X_test, y_test = X[n_train:], y[n_train:]
+
+    model = OfflineRidgeForecaster(k=k, alpha=alpha)
+    model.fit_xy(X_train, y_train)
+    y_pred = model.predict_batch(X_test)
+
+    print(
+        f"[offline_ridge lag={k} alpha={alpha} train_ratio={train_ratio:.2f}] "
+        f"n={len(y_test)} MAE={mae(y_test.tolist(), y_pred.tolist()):.3f} "
+        f"RMSE={rmse(y_test.tolist(), y_pred.tolist()):.3f}"
+    )
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, default=2000)
@@ -74,11 +100,23 @@ def main():
     ap.add_argument("--ml-lr", type=float, default=0.5)
     ap.add_argument("--buffer-size", type=int, default=32)
     ap.add_argument("--replay-steps", type=int, default=2)
+    ap.add_argument("--offline", action="store_true")
+    ap.add_argument("--offline-alpha", type=float, default=1.0)
+    ap.add_argument("--train-ratio", type=float, default=0.7)
     args = ap.parse_args()
 
     series = generate_synthetic_traffic(n=args.n)
 
     run_baseline(args.baseline, series)
+
+    if args.offline:
+        run_offline_ml(
+            series,
+            k=args.lag,
+            alpha=args.offline_alpha,
+            train_ratio=args.train_ratio,
+        )
+
     run_online_ml(
         series,
         k=args.lag,
